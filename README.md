@@ -1,56 +1,44 @@
 # Language Feedback API
 
-An LLM-powered REST API that analyzes learner-written sentences and returns structured
-grammar feedback. Built with FastAPI and OpenAI.
+An LLM-powered REST API that analyzes learner-written sentences and returns structured grammar feedback. Built with FastAPI and OpenAI.
 
 ## Design Decisions
 
 ### Model: `gpt-4o`
 
-The example code used `gpt-4o-mini`. Ultimately, I decided to go with `gpt-4o` because accuracy is scored, and why wouldn't I use the better model
-At the end of the day, the model is what impacts corrections the most.
-right across 8+ languages, including non-Latin scripts (Japanese, Korean, Russian,
-Chinese). The cost increase is real but manageable in the context of the other
-optimizations below.
+The example code used `gpt-4o-mini`, but I chose `gpt-4o` since accuracy is actually being scored. If there's a better model available, it just makes sense to use it.
+
+At the end of the day, the model is the biggest factor in how good the corrections are. `gpt-4o` performs well across 8+ languages, including non-Latin scripts like Japanese, Korean, Russian, and Chinese. The cost is higher, but it's still manageable, especially with the optimizations below.
 
 ### Prompt Strategy
 
-The system prompt has two components:
+The system prompt is split into two parts:
 
-**Rules block** — Six numbered rules covering every edge case in the spec: correct
-sentences, error classification, CEFR rating methodology, minimal-edit philosophy,
-and native-language explanations. Explicit rules reduce hallucinated error types
-and prevent the model from "correcting" things that aren't wrong.
+**Rules block** — This has six clear rules that cover edge cases from the spec: handling correct sentences, classifying errors, CEFR levels, keeping edits minimal, and giving explanations in the user's native language. Being explicit here helps prevent weird corrections or made-up error types.
 
-**Five few-shot examples** — There's one example per language (Spanish, French, German,
-Japanese, and Portuguese), each demonstrating a different error category. Few-shot
-examples one of the most reliable ways to enforce output format and show the model what
-"good" feedback looks like across scripts and writing systems. The examples are drawn
-directly from the spec so the model sees the exact quality bar expected.
+**Five few-shot examples** — There's one example per language (Spanish, French, German, Japanese, and Portuguese), each showing a different type of mistake. These examples help a lot with consistency. They show the model exactly what "good" feedback should look like across different languages and scripts.
 
-Temperature is set to `0.1` because this is a factual task, because of that of course we'd want consistent, accurate corrections, not creative variation.
+I also noticed that without examples, the outputs were less consistent, so adding them made a big difference.
+
+Temperature is set to `0.1` because this is a factual task. I want consistent, accurate corrections, not creative variation.
 
 ### Structured Output
 
-`response_format={"type": "json_object"}` combined with explicit JSON schema in the
-system prompt gives reliable schema compliance. Pydantic validates the response on
-the way out, so a malformed LLM response raises a `ValidationError` rather than
-silently returning bad data. `Literal` types on `error_type` and `difficulty` mean
-Pydantic rejects any value not in the allowed set.
+I used `response_format={"type": "json_object"}` along with a defined JSON schema in the prompt to keep responses structured.
+
+On top of that, Pydantic validates everything before returning it. So if the model outputs something malformed, it throws a `ValidationError` instead of silently passing bad data. Using `Literal` types for fields like `error_type` and `difficulty` also makes sure only valid values get through.
 
 ### Response Caching
 
-Identical requests return the cached result without hitting the API. The cache key is
-a SHA-256 hash of the normalized request (sentence + target language + native language,
-case-insensitive). This is an in-memory dict (resets on restart); a production
-deployment would use Redis with a TTL. Even in-memory caching provides a meaningful
-cost reduction in real use, where learners often resubmit the same sentence after
-making edits.
+If the same request comes in more than once, it returns a cached result instead of calling the API again.
+
+The cache key is a SHA-256 hash of the normalized input (sentence, target language, and native language, case-insensitive). Right now it's just an in-memory dictionary, so it resets on restart. In a real deployment, I'd switch this to Redis with a TTL.
+
+Even with this simple setup, it cuts down on cost since users often retry the same sentence after making small changes.
 
 ### Error Handling
 
-OpenAI `APIError` is caught and converted to an HTTP 502 so the caller gets a clean
-JSON error rather than an unhandled exception.
+If there's an OpenAI `APIError`, it gets caught and returned as an HTTP 502. That way the client still gets a clean JSON response instead of the server crashing.
 
 ## Running Locally
 
@@ -100,11 +88,6 @@ pytest -v
 
 ## Assumptions
 
-- **Verification for unknown languages**: Since I don't speak all 8+ tested languages,
-  I verified feedback accuracy by cross-referencing with reference grammars and native
-  speaker resources for each test case. The model handles the linguistic heavy lifting;
-  the tests check that the output structure and key corrections are correct.
-- **Cache scope**: In-memory caching is per-process. This is sufficient for a single
-  Docker container; horizontal scaling would require a shared cache layer.
-- **Correct sentences**: `is_correct: true` is returned with the original sentence
-  unchanged and an empty errors array.
+- **Verification for unknown languages**: I don't speak all 8+ languages, so I verified correctness by cross-checking with grammar references and native speaker resources. The model handles the actual language understanding, and the tests make sure the structure and key corrections are right.
+- **Cache scope**: The cache is per-process since it's in memory. That's fine for a single container, but scaling would require something like Redis.
+- **Correct sentences**: If a sentence is correct, the API returns `is_correct: true`, keeps the sentence unchanged, and returns an empty errors array.
